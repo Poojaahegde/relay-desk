@@ -1,0 +1,16 @@
+const assert=require('node:assert/strict');const {test}=require('node:test');const R=require('./engine.js');const sample=require('./sample.json');const copy=()=>structuredClone(sample);
+test('sample produces seven distinct workflow states',()=>{const r=R.evaluate(copy());assert.equal(r.rows.length,7);assert.equal(new Set(r.rows.map(x=>x.state)).size,7);assert.equal(r.duplicates,1);assert.equal(r.rows.filter(x=>x.severity!=='low').length,4);});
+test('duplicate event delivery never doubles a payment',()=>{const d=copy();d.events.push({...d.events[1]});const r=R.evaluate(d).rows[1];assert.equal(r.paid,48000);assert.equal(r.state,'Reconciled');assert.equal(r.duplicates,2);});
+test('same event id with different payload blocks reconciliation',()=>{const d=copy();d.events.push({...d.events[1],amount:99999});assert.equal(R.evaluate(d).rows[1].state,'Conflicting event ID');});
+test('currency mismatch cannot be approved as a sync',()=>{const r=R.evaluate(copy()).rows[3];assert.equal(r.state,'Currency mismatch');assert.equal(r.action,'Escalate');});
+test('distinct payments above invoice value require investigation',()=>{assert.equal(R.evaluate(copy()).rows[6].state,'Possible overpayment');});
+test('grace window changes overdue classification without changing money',()=>{const d=copy(),a=R.evaluate(d,undefined,24).rows[0],b=R.evaluate(d,undefined,72).rows[0];assert.equal(a.state,'Sync overdue');assert.equal(b.state,'Within sync window');assert.equal(a.paid,b.paid);});
+test('event ordering does not change invoice classification',()=>{const d=copy(),before=R.evaluate(d).rows.map(r=>r.state);d.events.reverse();assert.deepEqual(R.evaluate(d).rows.map(r=>r.state),before);});
+test('a delayed failed attempt does not undo a successful payment',()=>{const d=copy();d.events.push({...d.events[1],id:'failed-late',type:'failed',at:'2026-10-30T12:00:00Z'});assert.equal(R.evaluate(d).rows[1].state,'Reconciled');});
+test('accounting ahead of evidence must be escalated',()=>{const d=copy();d.invoices[0].booked=150000;assert.equal(R.evaluate(d).rows[0].state,'Ledger ahead');});
+test('future-dated events are held for review',()=>{const d=copy();d.events[0].at='2027-01-01T00:00:00Z';assert.equal(R.evaluate(d).rows[0].state,'Invalid event time');});
+test('unknown invoices are retained as orphan evidence',()=>{const d=copy();d.events.push({...d.events[0],id:'orphan',invoice:'missing'});assert.equal(R.evaluate(d).orphanEvents.length,1);});
+test('viewer cannot approve, operator must explain decision',()=>{const row=R.evaluate(copy()).rows[0];assert.throws(()=>R.approve(row,'Viewer','Check accounting state'),/Viewer/);assert.throws(()=>R.approve(row,'Operator','yes'),/12/);assert.equal(R.approve(row,'Operator','Verify ledger then request sync').action,'Request sync');});
+test('approval does not mutate source data or close exception',()=>{const d=copy(),before=JSON.stringify(d),r=R.evaluate(d).rows[0];R.approve(r,'Operator','Verify provider evidence');assert.equal(JSON.stringify(d),before);assert.equal(R.evaluate(d).rows[0].state,'Sync overdue');});
+test('malformed and fractional money inputs are rejected',()=>{const d=copy();d.invoices[0].amount=12.5;assert.throws(()=>R.validate(d));assert.throws(()=>R.validate({events:[]}));});
+test('empty queues remain valid',()=>{assert.equal(R.evaluate({invoices:[],events:[]}).rows.length,0);});

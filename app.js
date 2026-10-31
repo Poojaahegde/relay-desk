@@ -1,0 +1,27 @@
+'use strict';
+let data=structuredClone(window.SAMPLE),selected=data.invoices[0].id,audit=[];
+const $=id=>document.getElementById(id),esc=s=>String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const money=(c,currency='USD')=>{try{return new Intl.NumberFormat('en-US',{style:'currency',currency}).format(c/100);}catch{return `${currency} ${(c/100).toFixed(2)}`;}};
+let report;
+function render(){
+ report=Relay.evaluate(data,undefined,Number($('lag').value));
+ const attention=report.rows.filter(r=>r.severity!=='low');
+ $('stats').innerHTML=[['Invoices',report.rows.length],['Need attention',attention.length],['Duplicate deliveries ignored',report.duplicates],['Reconciled',report.rows.filter(r=>r.state==='Reconciled').length]].map(([k,v])=>`<div class="stat"><strong>${v}</strong><span>${k}</span></div>`).join('');
+ const q=$('search').value.toLowerCase(),filter=$('filter').value;
+ const rows=report.rows.filter(r=>(r.id+' '+r.customer).toLowerCase().includes(q)&&(filter==='all'||(filter==='attention'?r.severity!=='low':r.severity==='low')));
+ if(!rows.some(r=>r.id===selected))selected=rows[0]?.id;
+ $('queue').innerHTML=rows.length?rows.map(r=>`<button class="invoice" data-id="${esc(r.id)}" aria-pressed="${r.id===selected}"><span><strong>${esc(r.customer)}</strong><small>${esc(r.id)}</small></span><span class="right"><span class="badge ${r.severity}">${esc(r.state)}</span><small>${money(r.amount,r.currency)}</small></span></button>`).join(''):'<p class="empty">No invoices match. Try another filter.</p>';
+ $('queue').querySelectorAll('button').forEach(b=>b.onclick=()=>{selected=b.dataset.id;render();});
+ const row=report.rows.find(r=>r.id===selected);
+ if(!row){$('detail').innerHTML='<h3>No invoice selected</h3><p>Change the search or filter to inspect another item.</p>';return;}
+ const can=['Request sync','Escalate','Contact customer'].includes(row.action),done=audit.some(a=>a.invoice===row.id);
+ $('detail').innerHTML=`<p class="eyebrow">EVIDENCE / ${esc(row.id)}</p><h3>${esc(row.customer)}</h3><span class="badge ${row.severity}">${esc(row.state)}</span><div class="amounts"><div><small>INVOICE</small><b>${money(row.amount,row.currency)}</b></div><div><small>EVENT TOTAL${row.state==='Currency mismatch'?'*':''}</small><b>${row.state==='Currency mismatch'?'Mixed currency':money(row.paid,row.currency)}</b></div><div><small>ACCOUNTING</small><b>${money(row.booked,row.currency)}</b></div></div><p class="reason">${esc(row.reason)}</p><h4>Source event timeline</h4>${row.events.map(e=>`<div class="event"><span>${esc(e.id)} · ${esc(e.type)}<br>${esc(e.at)}</span><span>${money(e.amount,e.currency)}</span></div>`).join('')||'<p class="detail-sub">No events received.</p>'}<p class="detail-sub">${row.duplicates} duplicate delivery / deliveries ignored by event ID.</p><h4>Next step: ${esc(row.action)}</h4>${can?`<label>Decision rationale<textarea id="note" placeholder="Explain the next step and evidence to check."></textarea></label><button class="primary" id="approve" ${$('role').value==='Viewer'||done?'disabled':''}>${done?'Decision recorded':'Record simulated approval'}</button><p class="action-help">${$('role').value==='Viewer'?'Viewer mode: switch to Operator to record a decision.':'Requires a rationale. No external systems are changed.'}</p>`:'<p class="action-help">Continue monitoring source evidence. No operator action is required now.</p>'}`;
+ if(can)$('approve').onclick=()=>{try{const receipt=Relay.approve(row,$('role').value,$('note').value);audit.push({...receipt,recordedAt:new Date().toISOString(),lagHours:report.lagHours});$('notice').textContent='Decision recorded. The source exception remains open until new evidence arrives.';render();renderAudit();}catch(e){$('notice').textContent=e.message;}};
+ $('audit-count').textContent=`${audit.length} decision${audit.length===1?'':'s'}`;
+}
+function renderAudit(){$('audit').innerHTML=audit.length?audit.map(a=>`<li><b>${esc(a.invoice)} · ${esc(a.action)}</b> — ${esc(a.note)}<br>${esc(a.recordedAt)} · ${esc(a.status)}</li>`).join(''):'<li>No decisions recorded yet. Select an exception to start.</li>';}
+['role','lag','filter'].forEach(id=>$(id).onchange=render);$('search').oninput=render;
+$('reset').onclick=()=>{data=structuredClone(SAMPLE);selected=data.invoices[0].id;audit=[];$('search').value='';$('filter').value='all';$('lag').value='24';$('notice').textContent='Sample restored; session decisions cleared.';render();renderAudit();};
+$('file').onchange=async e=>{try{const f=e.target.files[0];if(!f)return;if(f.size>1000000)throw Error('Use a JSON file under 1 MB.');const next=JSON.parse(await f.text());Relay.validate(next);data=next;selected=data.invoices[0]?.id;audit=[];render();renderAudit();$('notice').textContent=`Imported ${data.invoices.length} invoices. ${report.orphanEvents.length} event(s) have no matching invoice; these are retained in the export.`;}catch(err){$('notice').textContent='Import rejected: '+err.message;}finally{e.target.value='';}};
+$('export').onclick=()=>{const blob=new Blob([JSON.stringify({project:'Relay Desk',mode:'simulation',...report,decisions:audit},null,2)],{type:'application/json'}),url=URL.createObjectURL(blob),a=document.createElement('a');a.href=url;a.download='relay-desk-review.json';a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);$('notice').textContent='Review exported with classifications, source events and decision trail.';};
+render();renderAudit();
