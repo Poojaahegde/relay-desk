@@ -5,6 +5,9 @@ An independent product prototype by **Pooja Hegde**. Investigate mismatches betw
 
 ## Try it
 
+**[Open the live demo](https://poojaahegde.github.io/relay-desk/)**
+
+
 Run `python3 -m http.server 8080` in this folder, then open `http://localhost:8080`.
 
 1. Select **Cedar Workshop**: payment arrived but accounting is overdue.
